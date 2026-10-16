@@ -39,6 +39,12 @@ the texture's actual size, not from the `.fnt` header. A 2× texture shows the w
    stair-stepped. The patched shaders shift sampling back onto texel centres (DX9 only).
 4. **Sharpened UI art.** `text.shader` (non-font textures) and the `buttonstate*.shader` family that
    draws nearly all UI sprites apply AMD FSR 1's RCAS sharpening to the 2× magnified art.
+5. **Tooltip text reconstruction.** The engine renders tooltips into an offscreen buffer at 1×
+   (1920×1080 scale) and stretches that 2×, so tooltip text can't use the 2× fonts. The shaders
+   recognise that buffer by its background (`tiles_dialog.dds`, alpha 253/255). There they treat the
+   anti-aliased 1× text as an implicit outline: bicubic interpolation, then each pixel is redrawn on
+   the dark or bright side of the 50% contour with a one-pixel edge. Tooltips come out crisp, though
+   their letter shapes still only carry 1× detail.
 
 The patched shaders are generated from the installed game's own copies at build time. The mod
 overrides `gfx/fonts/*`, `gfx/FX/text.shader` and `gfx/FX/buttonstate*.shader`, so it combines with UI
@@ -46,10 +52,8 @@ mods that move windows around. It conflicts only with mods that replace those sa
 
 ## Not covered
 
-- **Tooltips.** The engine renders tooltip contents into an offscreen buffer at 1× (1920×1080 scale)
-  and then stretches it 2×, so tooltip text can't use the 2× fonts. No mod can change that; the
-  buffer's stretch is only smoothed (DX9) and sharpened, which makes tooltips slightly better than
-  vanilla.
+- Tooltips are reconstructed from a 1× image (see above), so small details such as serifs or thin
+  strokes aren't as faithful as the 2× text elsewhere. Icons inside tooltips get slightly harder edges.
 - Icons and other UI art are still 1× bitmaps; sharpening helps, but they're not truly high-res.
 - Map labels (country, state and arrow text) use separate map shaders and fonts. They're untouched;
   they're world-space and scale with zoom anyway.

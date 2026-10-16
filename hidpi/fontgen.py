@@ -57,24 +57,55 @@ def _align(ttf, cp, cw, ch, pen_x, base_y, target):
     return best
 
 
-def convert_glyph(g, tex, base, spec, ttf):
+def _glyph_cell(g, tex, spec):
+    """The original glyph padded by PAD, plus its fill coverage estimate; None for empty glyphs."""
     if g.w <= 0 or g.h <= 0:
-        return GlyphResult(g, None, 'empty')
+        return None
     cell = np.pad(tex[g.y:g.y + g.h, g.x:g.x + g.w], ((PAD, PAD), (PAD, PAD), (0, 0)))
     if cell[..., 3].max() < 1.0 / 255.0:
+        return None
+    return cell, fill_target(cell, spec.effects)
+
+
+def font_shift(font, tex, spec, ttf, sample=48):
+    """Subpixel offset between the outline font and the original bitmaps, shared by all glyphs.
+
+    Fitting each glyph separately would give every glyph its own offset of up to half a pixel,
+    which shows up as a jittery baseline and uneven spacing.
+    """
+    shifts = []
+    candidates = ([g for g in font.glyphs if 33 <= g.id < 127 and ttf.has(g.id)]
+                  or [g for g in font.glyphs if g.id > 32 and ttf.has(g.id)])
+    for g in candidates[::max(1, len(candidates) // sample)]:
+        prepared = _glyph_cell(g, tex, spec)
+        if prepared is None or prepared[1].max() <= 0.2:
+            continue
+        cell, target = prepared
+        score, sx, sy = _align(ttf, g.id, cell.shape[1], cell.shape[0], PAD - g.xo, PAD + font.base - g.yo, target)
+        if score >= MIN_NCC:
+            shifts.append((sx, sy))
+    if not shifts:
+        return 0.0, 0.0
+    sx, sy = np.median(np.array(shifts), axis=0)
+    return float(sx), float(sy)
+
+
+def convert_glyph(g, tex, base, spec, ttf, shift):
+    prepared = _glyph_cell(g, tex, spec)
+    if prepared is None:
         return GlyphResult(g, None, 'empty')
+    cell, target = prepared
     ch, cw = cell.shape[:2]
-    target = fill_target(cell, spec.effects)
 
     source = 'upscale'
     m1 = target
     m2 = None
     if ttf is not None and ttf.has(g.id) and target.max() > 0.2:
-        pen_x, base_y = PAD - g.xo, PAD + base - g.yo
-        score, sx, sy = _align(ttf, g.id, cw, ch, pen_x, base_y, target)
-        if score >= MIN_NCC:
-            m1 = ttf.render(g.id, cw, ch, pen_x + sx, base_y + sy, scale=1)
-            m2 = ttf.render(g.id, cw, ch, pen_x + sx, base_y + sy, scale=2, ss=4)
+        pen_x, base_y = PAD - g.xo + shift[0], PAD + base - g.yo + shift[1]
+        cov = ttf.render(g.id, cw, ch, pen_x, base_y, scale=1)
+        if _ncc(cov, target) >= MIN_NCC:
+            m1 = cov
+            m2 = ttf.render(g.id, cw, ch, pen_x, base_y, scale=2, ss=4)
             source = 'ttf'
     if m2 is None:
         if trace.available():
@@ -140,7 +171,8 @@ def _pack(results, width, empty_size):
 def build_atlas(font: BMFont, tex, spec: FontSpec):
     """Returns (BMFont with 1x metrics, 2x RGBA atlas, glyph counts per source, 1x atlas size)."""
     ttf = TTFGlyphs(spec.ttf, spec.em, spec.embolden) if spec.ttf else None
-    results = [convert_glyph(g, tex, font.base, spec, ttf) for g in font.glyphs]
+    shift = font_shift(font, tex, spec, ttf) if ttf else (0.0, 0.0)
+    results = [convert_glyph(g, tex, font.base, spec, ttf, shift) for g in font.glyphs]
     results = [_crop(r) if r.rgba is not None else r for r in results]
 
     area = sum(r.glyph.w * r.glyph.h for r in results if r.rgba is not None)

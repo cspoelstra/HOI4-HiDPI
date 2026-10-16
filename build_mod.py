@@ -96,6 +96,60 @@ def rcas(sampler):
 			vHdSharp = saturate( vHdSharp / max( OutColor.a, 1.0 / 255.0 ) );'''
 
 
+def tooltip_text(sampler):
+    '''HLSL that updates vHdRGB for texels of a tooltip render target.
+
+    Tooltips are rendered at 1x into an offscreen texture that is then magnified 2x, so their text
+    can't use the 2x atlases. Their background (gfx/interface/tiles/tiles_dialog.dds) has alpha
+    253/255, which identifies them. There the anti-aliased 1x text is treated as an implicit outline:
+    interpolate bicubically, then redraw each pixel on the dark or bright side of the 50% contour
+    between the darkest and brightest of the 4x4 surrounding texels, with a ~1px edge. Low-contrast
+    areas are left as they are.
+    '''
+    taps = []
+    for j in range(-1, 3):
+        for i in range(-1, 3):
+            taps += [
+                f'vHdTap = tex2Dlod0( {sampler}, vHdUV00 + float2( {i}.0, {j}.0 ) * vHdTexel ).rgb;',
+                f'vHdCubic += vHdWY.{"xyzw"[j + 1]} * vHdWX.{"xyzw"[i + 1]} * vHdTap;',
+                'fHdTapL = dot( vHdTap, vHdLuma );',
+                'if ( fHdTapL < fHdLo ) { fHdLo = fHdTapL; vHdLo = vHdTap; }',
+                'if ( fHdTapL > fHdHi ) { fHdHi = fHdTapL; vHdHi = vHdTap; }',
+            ]
+    taps = '\n\t\t\t\t'.join(taps)
+    return f'''float2 vHdTexel = 2.0 * float2( ddx( vHdUV ).x, ddy( vHdUV ).y );
+			float2 vHdPos = vHdUV / vHdTexel - 0.5;
+			float2 vHdFrac = vHdPos - floor( vHdPos );
+			float2 vHdUV00 = ( floor( vHdPos ) + 0.5 ) * vHdTexel;
+			float4 vHdT00 = tex2Dlod0( {sampler}, vHdUV00 );
+			float4 vHdT10 = tex2Dlod0( {sampler}, vHdUV00 + float2( vHdTexel.x, 0.0 ) );
+			float4 vHdT01 = tex2Dlod0( {sampler}, vHdUV00 + float2( 0.0, vHdTexel.y ) );
+			float4 vHdT11 = tex2Dlod0( {sampler}, vHdUV00 + vHdTexel );
+			float4 vHdTag4 = abs( float4( vHdT00.a, vHdT10.a, vHdT01.a, vHdT11.a ) * 255.0 - 253.0 );
+			if ( min( min( vHdTag4.x, vHdTag4.y ), min( vHdTag4.z, vHdTag4.w ) ) < 0.5 )
+			{{
+				float2 vHdT = vHdFrac;
+				float2 vHdT2 = vHdT * vHdT;
+				float2 vHdT3 = vHdT2 * vHdT;
+				float4 vHdWX = float4( -0.5 * vHdT3.x + vHdT2.x - 0.5 * vHdT.x, 1.5 * vHdT3.x - 2.5 * vHdT2.x + 1.0, -1.5 * vHdT3.x + 2.0 * vHdT2.x + 0.5 * vHdT.x, 0.5 * vHdT3.x - 0.5 * vHdT2.x );
+				float4 vHdWY = float4( -0.5 * vHdT3.y + vHdT2.y - 0.5 * vHdT.y, 1.5 * vHdT3.y - 2.5 * vHdT2.y + 1.0, -1.5 * vHdT3.y + 2.0 * vHdT2.y + 0.5 * vHdT.y, 0.5 * vHdT3.y - 0.5 * vHdT2.y );
+				float3 vHdLuma = float3( 0.299, 0.587, 0.114 );
+				float3 vHdCubic = float3( 0.0, 0.0, 0.0 );
+				float3 vHdTap = float3( 0.0, 0.0, 0.0 );
+				float3 vHdLo = float3( 1.0, 1.0, 1.0 );
+				float3 vHdHi = float3( 0.0, 0.0, 0.0 );
+				float fHdLo = 2.0;
+				float fHdHi = -1.0;
+				float fHdTapL = 0.0;
+				{taps}
+				vHdCubic = saturate( vHdCubic );
+				float fHdEdge = saturate( ( ( dot( vHdCubic, vHdLuma ) - fHdLo ) / max( fHdHi - fHdLo, 0.0001 ) - 0.5 ) / 0.4 + 0.5 );
+				fHdEdge = fHdEdge * fHdEdge * ( 3.0 - 2.0 * fHdEdge );
+				float fHdContrast = saturate( ( fHdHi - fHdLo - 0.08 ) / 0.15 );
+				vHdRGB = lerp( vHdCubic, lerp( vHdLo, vHdHi, fHdEdge ), fHdContrast );
+			}}'''
+
+
 TEXT_ORIG = 'float4 OutColor = tex2D( SimpleTexture, v.vTexCoord );'
 TEXT_PATCH = f'''// Font atlases from the HiDPI Text mod are stored at twice the resolution their .fnt describes
 			// and carry magenta, alpha 1/255 corner texels. The engine derives glyph UVs from the real
@@ -105,17 +159,21 @@ TEXT_PATCH = f'''// Font atlases from the HiDPI Text mod are stored at twice the
 			float2 vHdUV = v.vTexCoord * ( bHdFont ? 2.0 : 1.0 );
 {DX9_ALIGN}
 		    float4 OutColor = tex2D( SimpleTexture, vHdUV );
-			// Other textures through here are magnified UI art, e.g. the 1x tooltip render target on DX11.
+			// Other textures through here are magnified UI art, e.g. the tooltip render target on DX11.
 			{rcas('SimpleTexture')}
-			OutColor.rgb = bHdFont ? OutColor.rgb : vHdSharp;'''
+			float3 vHdRGB = vHdSharp;
+			{tooltip_text('SimpleTexture')}
+			OutColor.rgb = bHdFont ? OutColor.rgb : vHdRGB;'''
 
 SPRITE_ORIG = 'float4 OutColor = tex2D( MapTexture, v.vTexCoord );'
 SPRITE_PATCH = f'''float2 vHdUV = v.vTexCoord;
 {DX9_ALIGN}
 			float4 OutColor = tex2D( MapTexture, vHdUV );
-			// UI art, and on DX9 the 1x tooltip render target, is magnified 2x: sharpen it.
+			// UI art, and on DX9 the tooltip render target, is magnified 2x: sharpen it.
 			{rcas('MapTexture')}
-			OutColor.rgb = vHdSharp;'''
+			float3 vHdRGB = vHdSharp;
+			{tooltip_text('MapTexture')}
+			OutColor.rgb = vHdRGB;'''
 
 SHADER_PATCHES = {
     'text.shader': (TEXT_ORIG, TEXT_PATCH),
