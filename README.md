@@ -4,6 +4,9 @@ Makes HOI4's UI readable on a 4K screen: run the game at native 3840×2160 with 
 **UI Scaling (Experimental)** set to **2.0**, and this mod makes UI text render sharp instead of
 blurry. It works on both the DirectX 9 (legacy) and DirectX 11 renderers.
 
+**Get it on the [Steam Workshop](https://steamcommunity.com/sharedfiles/filedetails/?id=3821059269)**, or build it from your own install (see
+[Building and installing](#building-and-installing)).
+
 ![decisions](docs/compare_decisions.png)
 ![top bar](docs/compare_topbar.png)
 ![tooltip](docs/compare_tooltip.png)
@@ -84,8 +87,7 @@ mods that replace those same files.
 Requirements: Python 3 with `numpy`, `Pillow` and `fontTools`; `fc-match` (fontconfig); `potrace`; and
 the Ubuntu, URW Gothic (`gsfonts`) and Liberation font packages. A missing outline font isn't fatal:
 those fonts are traced from their bitmaps instead and the script prints a warning. Podkova is
-bundled in `fonts/`. Without potrace,
-bitmap fonts fall back to a simpler, softer upscaler.
+bundled in `fonts/`. Without potrace, bitmap fonts fall back to a simpler, softer upscaler.
 
 ```bash
 python3 build_mod.py --install
@@ -102,7 +104,8 @@ with an error if a shader changed in a way it doesn't recognise.
 
 ## In-game setup
 
-1. Enable **HiDPI Text (2x)** in a playset in the Paradox launcher.
+1. Subscribe on the [Steam Workshop](https://steamcommunity.com/sharedfiles/filedetails/?id=3821059269), or build and install it yourself. Then enable
+   **HiDPI Text (2x)** in a playset in the Paradox launcher.
 2. In the launcher's game settings, set the resolution to **3840×2160** (fullscreen or borderless).
 3. In the in-game settings, set **UI Scaling (Experimental)** to **2.0**. Alternatively, set
    `gui_scale=2.000000` in `settings.txt` in the user directory above.
