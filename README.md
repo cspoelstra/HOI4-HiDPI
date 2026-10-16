@@ -94,3 +94,8 @@ Uninstall: disable the mod, then delete `mod/hidpi_text` and `mod/hidpi_text.mod
 - `hidpi/trace.py`: potrace-based vectorisation of bitmap glyphs.
 - `hidpi/imageops.py`: inpainting, 2× resampling, fallback bitmap upscaling.
 - `hidpi/preview.py`: offline before/after renderer for tuning, without starting the game.
+
+## License
+
+MIT; see [LICENSE](LICENSE). The generated mod contains material derived from Hearts of Iron IV
+assets, which remain the property of Paradox Interactive; build it yourself from your own install.
