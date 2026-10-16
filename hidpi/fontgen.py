@@ -8,12 +8,21 @@ from . import trace
 from .imageops import inpaint, luminance, premultiply, sharpen_coverage, unpremultiply, upscale2x
 from .ttf import TTFGlyphs
 
-# Corner texels of every generated atlas are magenta with alpha 1/255; text.shader looks for that to
-# know the texture is stored at 2x (the engine derives glyph UVs from the real texture size). Green
-# carries log2 of the atlas width / 32, which lets the shader tell 1:1 screen text from text drawn
-# minified into the 1x tooltip render target.
-def marker(width):
-    return np.array([1.0, np.log2(width) / 32.0, 1.0, 1.0 / 255.0], dtype=np.float32)
+# Corner texels of every generated atlas are red with alpha 1/255; text.shader looks for that to know
+# the texture is stored at 2x (the engine derives glyph UVs from the real texture size). Green carries
+# log2 of the atlas width / 32, blue the grey level of the glyph fill, which text.shader needs to store
+# text drawn into 1x render targets at 2x; 0 means the font has effects and is drawn as usual there.
+def marker(width, fill):
+    return np.array([1.0, np.log2(width) / 32.0, fill, 1.0 / 255.0], dtype=np.float32)
+
+
+def fill_level(atlas, spec):
+    if spec.resize != 1.0:
+        return spec.fill
+    if spec.effects:
+        return 0.0
+    solid = atlas[..., 3] > 0.9
+    return float(np.percentile(luminance(atlas[solid]), 90)) if solid.any() else 1.0
 
 PAD = 2          # 1x pixels of working margin around each original glyph cell
 GAP = 1          # 1x pixels between packed glyphs and around the atlas border
@@ -267,8 +276,9 @@ def build_atlas(font: BMFont, tex, spec: FontSpec):
         x, y = pos[g.id]
         atlas[y * 2:(y + g.h) * 2, x * 2:(x + g.w) * 2] = r.rgba
         glyphs.append(replace(g, x=x, y=y))
+    fill = fill_level(atlas, spec)
     for cy in (0, -1):
         for cx in (0, -1):
-            atlas[cy, cx] = marker(atlas.shape[1])
+            atlas[cy, cx] = marker(atlas.shape[1], fill)
 
     return BMFont(dict(font.info), dict(font.common), glyphs, list(font.kernings)), atlas, counts, (width, height)

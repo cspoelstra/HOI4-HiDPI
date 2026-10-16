@@ -6,6 +6,7 @@ blurry. It works on both the DirectX 9 (legacy) and DirectX 11 renderers.
 
 ![decisions](docs/compare_decisions.png)
 ![top bar](docs/compare_topbar.png)
+![tooltip](docs/compare_tooltip.png)
 
 ## Why the built-in scaling is blurry
 
@@ -39,15 +40,23 @@ the texture's actual size, not from the `.fnt` header. A 2× texture shows the w
    stair-stepped. The patched shaders shift sampling back onto texel centres (DX9 only).
 4. **Sharpened UI art.** `text.shader` (non-font textures) and the `buttonstate*.shader` family that
    draws nearly all UI sprites apply AMD FSR 1's RCAS sharpening to the 2× magnified art.
-5. **Tooltip text reconstruction.** The engine renders tooltips into an offscreen buffer at 1×
-   (1920×1080 scale) and stretches that 2×, so tooltip text can't use the 2× fonts. The shaders
-   recognise that buffer by its background (`tiles_dialog.dds`, alpha 253/255). There they treat the
-   anti-aliased 1× text as an implicit outline: bicubic interpolation, then each pixel is redrawn on
-   the dark or bright side of the 50% contour with a one-pixel edge.
-6. **Bigger tooltip text.** To give that reconstruction more pixels per letter, the tooltip font
-   (`cg_16b` + `hoi_16tooltip3`) is drawn 25% larger: 20px instead of 16px, redrawn from URW Gothic with
-   the vanilla fill and drop shadow re-created. The tooltip text box in `interface/core.gui` is widened
-   by the same factor, so tooltips wrap as in vanilla, just bigger.
+5. **2× text in tooltips and labelled buttons.** The engine draws tooltips, and buttons whose label is
+   baked into the button image (`textSpriteType`, e.g. the main menu), into an offscreen buffer at 1×
+   (1920×1080 scale), then stretches that 2×. Plain 2× fonts can't survive that, so the shaders carry the
+   detail through the buffer instead:
+   - `text.shader` notices when it draws into such a buffer (one UI unit per pixel). For each pixel of
+     a glyph it stores the coverage of the four 2× sub-pixels under it (3 bits each) and the text
+     colour (4 bits per channel) in place of the blended colour. These texels get alpha 255; everything
+     else it draws there stays below 255. Texel (0,0) gets a marker colour and texel (0,1) the colour
+     of the background art.
+   - The shaders that draw the buffer to the screen (`buttonstate*.shader`, and `text.shader` on DX11)
+     look for the marker. If it's there, they draw each text texel as 2×2 screen pixels from its
+     sub-pixel coverage, over the surrounding background.
+   - Fonts with baked effects (bevels, outlines) are still drawn the vanilla way there, at 1×.
+6. **Bigger tooltip text.** The tooltip font (`cg_16b` + `hoi_16tooltip3`) is drawn 25% larger: 20px
+   instead of 16px, redrawn from URW Gothic. The tooltip text box in `interface/core.gui` is widened by
+   the same factor, so tooltips wrap as in vanilla, just bigger. Inside tooltips the text is drawn
+   without the font's drop shadow, which was barely visible on the dark tooltip background.
 
 The patched shaders are generated from the installed game's own copies at build time. The mod
 overrides `gfx/fonts/*`, `gfx/FX/text.shader`, `gfx/FX/buttonstate*.shader` and `interface/core.gui`
@@ -55,8 +64,10 @@ overrides `gfx/fonts/*`, `gfx/FX/text.shader`, `gfx/FX/buttonstate*.shader` and 
 
 ## Not covered
 
-- Tooltips are still reconstructed from a 1× image (see above), so they're not quite as clean as the
-  2× text elsewhere. Icons inside tooltips get slightly harder edges.
+- Tooltip and button text keeps 8 levels of anti-aliasing per pixel instead of 256. That doesn't
+  show at this size, but it is a limit.
+- Button labels in fonts with baked effects (e.g. the main menu's header font) stay 1× in their
+  offscreen buffer, as in vanilla.
 - Icons and other UI art are still 1× bitmaps; sharpening helps, but they're not truly high-res.
 - Map labels (country, state and arrow text) use separate map shaders and fonts. They're untouched;
   they're world-space and scale with zoom anyway.

@@ -67,10 +67,9 @@ OUTLINES = {
     'hoi_22typewriter_cryllic_inverted': (SERIF, 19.82),
 }
 
-# Tooltip fonts (cg_16b and its fallback file). Tooltips are drawn at 1x into a render target and
-# magnified (see tooltip_text), so they get a bigger font: more pixels per letter for the
-# reconstruction, and easier to read. Fill grey and drop shadow (dx, dy, sigma, strength in vanilla
-# pixels) were measured from the vanilla bitmaps.
+# Tooltip fonts (cg_16b and its fallback file) are drawn 25% larger than vanilla, which is easier to
+# read. Fill grey and drop shadow (dx, dy, sigma, strength in vanilla pixels) were measured from the
+# vanilla bitmaps.
 TOOLTIP_SCALE = 1.25
 RESIZED = {
     'cg_16b': dict(fill=0.77, shadow=(0.0, 1.0, 0.75, 1.2)),
@@ -83,6 +82,14 @@ DX9_ALIGN = '''#ifdef PDX_DIRECTX_9
 			// Shift sampling back onto texel centres.
 			vHdUV += 0.5 * float2( ddx( vHdUV ).x, ddy( vHdUV ).y );
 #endif'''
+
+# Tooltips and buttons with baked-in labels (textSpriteType) are drawn by text.shader into an offscreen
+# texture at one pixel per UI unit, which is then magnified to the UI scale like any other sprite.
+# text.shader stores text drawn there as 2x2 sub-pixel coverage plus colour in texels with alpha 255
+# (everything else it draws there stays below 255), and marks texel (0,0) with this colour so the
+# shaders that draw the texture know to decode it. Texel (0,1) holds the colour at the centre of the
+# background art, for text texels with no background next to them.
+BEACON = '( float4( 90.0, 60.0, 165.0, 255.0 ) / 255.0 )'
 
 
 def rcas(sampler):
@@ -106,101 +113,163 @@ def rcas(sampler):
 			vHdSharp = saturate( vHdSharp / max( OutColor.a, 1.0 / 255.0 ) );'''
 
 
-def tooltip_text(sampler):
-    '''HLSL that updates vHdRGB for texels of a tooltip render target.
+def target_text(sampler):
+    '''HLSL that redraws a texture written by text.shader as a 1x render target (see BEACON).
 
-    Tooltips are rendered at 1x into an offscreen texture that is then magnified 2x, so their text
-    can't use the 2x atlases. Their background (gfx/interface/tiles/tiles_dialog.dds) has alpha
-    253/255, which identifies them. There the anti-aliased 1x text is treated as an implicit outline:
-    interpolate bicubically, then redraw each pixel on the dark or bright side of the 50% contour
-    between the darkest and brightest of the 4x4 surrounding texels, with a ~1px edge. Low-contrast
-    areas are left as they are.
+    Texels with alpha 255 hold text: each screen pixel shows its sub-pixel's coverage of the text
+    colour over the average of the surrounding non-text texels, or over the reference background if
+    there are none. Next to text, the texture is magnified without blending in those texels. Updates
+    vHdRGB and OutColor.a.
     '''
-    taps = []
-    for j in range(-1, 3):
-        for i in range(-1, 3):
-            taps += [
-                f'vHdTap = tex2Dlod0( {sampler}, vHdUV00 + float2( {i}.0, {j}.0 ) * vHdTexel ).rgb;',
-                f'vHdCubic += vHdWY.{"xyzw"[j + 1]} * vHdWX.{"xyzw"[i + 1]} * vHdTap;',
-                'fHdTapL = dot( vHdTap, vHdLuma );',
-                'if ( fHdTapL < fHdLo ) { fHdLo = fHdTapL; vHdLo = vHdTap; }',
-                'if ( fHdTapL > fHdHi ) { fHdHi = fHdTapL; vHdHi = vHdTap; }',
-            ]
-    taps = '\n\t\t\t\t'.join(taps)
-    return f'''float2 vHdTexel = 2.0 * float2( ddx( vHdUV ).x, ddy( vHdUV ).y );
-			float2 vHdPos = vHdUV / vHdTexel - 0.5;
-			float2 vHdFrac = vHdPos - floor( vHdPos );
-			float2 vHdUV00 = ( floor( vHdPos ) + 0.5 ) * vHdTexel;
-			float4 vHdT00 = tex2Dlod0( {sampler}, vHdUV00 );
-			float4 vHdT10 = tex2Dlod0( {sampler}, vHdUV00 + float2( vHdTexel.x, 0.0 ) );
-			float4 vHdT01 = tex2Dlod0( {sampler}, vHdUV00 + float2( 0.0, vHdTexel.y ) );
-			float4 vHdT11 = tex2Dlod0( {sampler}, vHdUV00 + vHdTexel );
-			float4 vHdTag4 = abs( float4( vHdT00.a, vHdT10.a, vHdT01.a, vHdT11.a ) * 255.0 - 253.0 );
-			if ( min( min( vHdTag4.x, vHdTag4.y ), min( vHdTag4.z, vHdTag4.w ) ) < 0.5 )
+    names = {(i, j): f'vHdT{"mzp"[i + 1]}{"mzp"[j + 1]}' for j in (-1, 0, 1) for i in (-1, 0, 1)}
+    # Text texels and the two marker texels are never blended into their neighbours.
+    taps = '\n\t\t\t\t'.join(
+        f'float4 {n} = tex2Dlod0( {sampler}, ( vHdCell + float2( {i + 0.5}, {j + 0.5} ) ) * vHdUnit );\n'
+        f'\t\t\t\tfloat fHdP{n[4:]} = max( step( 254.5 / 255.0, {n}.a ), vHdCell.x == {-i}.0 && abs( vHdCell.y + {j - 0.5} ) < 1.0 ? 1.0 : 0.0 );'
+        for (i, j), n in names.items())
+    ring = [n for (i, j), n in names.items() if (i, j) != (0, 0)]
+    bg_sum = ' + '.join(f'( 1.0 - fHdP{n[4:]} ) * {n}' for n in ring)
+    bg_n = ' + '.join(f'fHdP{n[4:]}' for n in ring)
+    return f'''// Texel size from the texture's UV change per UI unit, snapped to a whole number of texels so the
+			// samples below hit texel centres exactly.
+			float2 vHdUnit = abs( float2( ddx( vHdUV ).x, ddy( vHdUV ).y ) ) / max( abs( float2( ddx( v.vHdUI.x ), ddy( v.vHdUI.y ) ) ), 0.00001 );
+			vHdUnit = 1.0 / max( floor( 1.0 / vHdUnit + 0.5 ), 1.0 );
+			if ( all( abs( tex2Dlod0( {sampler}, 0.5 * vHdUnit ) - {BEACON} ) < 0.5 / 255.0 ) )
 			{{
-				float2 vHdT = vHdFrac;
-				float2 vHdT2 = vHdT * vHdT;
-				float2 vHdT3 = vHdT2 * vHdT;
-				float4 vHdWX = float4( -0.5 * vHdT3.x + vHdT2.x - 0.5 * vHdT.x, 1.5 * vHdT3.x - 2.5 * vHdT2.x + 1.0, -1.5 * vHdT3.x + 2.0 * vHdT2.x + 0.5 * vHdT.x, 0.5 * vHdT3.x - 0.5 * vHdT2.x );
-				float4 vHdWY = float4( -0.5 * vHdT3.y + vHdT2.y - 0.5 * vHdT.y, 1.5 * vHdT3.y - 2.5 * vHdT2.y + 1.0, -1.5 * vHdT3.y + 2.0 * vHdT2.y + 0.5 * vHdT.y, 0.5 * vHdT3.y - 0.5 * vHdT2.y );
-				float3 vHdLuma = float3( 0.299, 0.587, 0.114 );
-				float3 vHdCubic = float3( 0.0, 0.0, 0.0 );
-				float3 vHdTap = float3( 0.0, 0.0, 0.0 );
-				float3 vHdLo = float3( 1.0, 1.0, 1.0 );
-				float3 vHdHi = float3( 0.0, 0.0, 0.0 );
-				float fHdLo = 2.0;
-				float fHdHi = -1.0;
-				float fHdTapL = 0.0;
+				float2 vHdPos = vHdUV / vHdUnit;
+				float2 vHdCell = floor( vHdPos );
+				float2 vHdSub = step( 0.5, vHdPos - vHdCell );
 				{taps}
-				vHdCubic = saturate( vHdCubic );
-				float fHdEdge = saturate( ( ( dot( vHdCubic, vHdLuma ) - fHdLo ) / max( fHdHi - fHdLo, 0.0001 ) - 0.5 ) / 0.4 + 0.5 );
-				fHdEdge = fHdEdge * fHdEdge * ( 3.0 - 2.0 * fHdEdge );
-				float fHdContrast = saturate( ( fHdHi - fHdLo - 0.08 ) / 0.15 );
-				vHdRGB = lerp( vHdCubic, lerp( vHdLo, vHdHi, fHdEdge ), fHdContrast );
+				float fHdText = fHdPzz + {bg_n};
+				// The marker texels show their right-hand neighbour.
+				float fHdCorner = vHdCell.x == 0.0 && abs( vHdCell.y - 0.5 ) < 1.0 ? 1.0 : 0.0;
+				vHdTzz = lerp( vHdTzz, vHdTpz, fHdCorner );
+				fHdPzz = lerp( fHdPzz, fHdPpz, fHdCorner );
+				if ( fHdPzz > 0.5 )
+				{{
+					float fHdBgN = 8.0 - ( {bg_n} );
+					float4 vHdBg = fHdBgN > 0.5 ? ( {bg_sum} ) / fHdBgN : tex2Dlod0( {sampler}, float2( 0.5, 1.5 ) * vHdUnit );
+					float3 vHdByte = floor( vHdTzz.rgb * 255.0 + 0.5 );
+					float3 vHdHi = floor( vHdByte / 16.0 );
+					float3 vHdLo = vHdByte - 16.0 * vHdHi;
+					float3 vHdQ = floor( vHdLo / 2.0 );
+					float4 vHdCov = float4( vHdQ, dot( vHdLo - 2.0 * vHdQ, float3( 1.0, 2.0, 4.0 ) ) ) / 7.0;
+					float2 vHdRow = lerp( vHdCov.xz, vHdCov.yw, vHdSub.x );
+					float fHdCov = lerp( vHdRow.x, vHdRow.y, vHdSub.y );
+					vHdRGB = lerp( vHdBg.rgb, vHdHi / 15.0, fHdCov );
+					OutColor.a = lerp( vHdBg.a, 1.0, fHdCov );
+				}}
+				else if ( fHdText > 0.5 )
+				{{
+					float2 vHdW = abs( vHdPos - vHdCell - 0.5 );
+					bool bHdR = vHdSub.x > 0.5;
+					bool bHdD = vHdSub.y > 0.5;
+					float4 vHdX = lerp( bHdR ? vHdTpz : vHdTmz, vHdTzz, bHdR ? fHdPpz : fHdPmz );
+					float4 vHdY = lerp( bHdD ? vHdTzp : vHdTzm, vHdTzz, bHdD ? fHdPzp : fHdPzm );
+					float4 vHdXY = bHdR ? ( bHdD ? vHdTpp : vHdTpm ) : ( bHdD ? vHdTmp : vHdTmm );
+					vHdXY = lerp( vHdXY, vHdTzz, bHdR ? ( bHdD ? fHdPpp : fHdPpm ) : ( bHdD ? fHdPmp : fHdPmm ) );
+					float4 vHdLin = lerp( lerp( vHdTzz, vHdX, vHdW.x ), lerp( vHdY, vHdXY, vHdW.x ), vHdW.y );
+					vHdRGB = vHdLin.rgb;
+					OutColor.a = vHdLin.a;
+				}}
 			}}'''
 
 
-TEXT_ORIG = 'float4 OutColor = tex2D( SimpleTexture, v.vTexCoord );'
+TEXT_VS_STRUCT = ('\tfloat4  vColor\t  : TEXCOORD1;\n};',
+                  '\tfloat4  vColor\t  : TEXCOORD1;\n\tfloat4  vHdUI\t  : TEXCOORD2;\n\tfloat2  vHdClip  : TEXCOORD3;\n};')
+TEXT_VS = '\t[[\n\t\tVS_OUTPUT main(const VS_INPUT v )\n\t\t{\n\t\t    VS_OUTPUT Out;'
+TEXT_VS_3D = ('MainCode VertexShaderText3D\n' + TEXT_VS,
+              'MainCode VertexShaderText3D\n' + TEXT_VS + '''
+			Out.vHdUI = float4( 0.0, 0.0, 0.0, 0.0 );
+			Out.vHdClip = float2( 0.0, 0.0 );''')
+TEXT_VS_2D = ('MainCode VertexShaderText\n' + TEXT_VS,
+              'MainCode VertexShaderText\n' + TEXT_VS + '''
+			// UI coordinates, and the width of what is drawn into as 2 / that.
+			Out.vHdUI = float4( v.vPosition.xy, abs( Matrix[0][0] ), 0.0 );
+			Out.vHdClip = mul( Matrix, v.vPosition ).xy;''')
+
+TEXT_ORIG = '''float4 OutColor = tex2D( SimpleTexture, v.vTexCoord );
+			OutColor = OutColor * v.vColor;
+		    return OutColor;'''
 TEXT_PATCH = f'''// Font atlases from the HiDPI Text mod are stored at twice the resolution their .fnt describes
-			// and carry magenta, alpha 1/255 corner texels. The engine derives glyph UVs from the real
-			// texture size, so for those textures the UVs come out halved.
+			// and carry red, alpha 1/255 corner texels (hidpi/fontgen.py). The engine derives glyph UVs from
+			// the real texture size, so for those textures the UVs come out halved.
 			float4 vHdTag = tex2Dlod0( SimpleTexture, float2( 0.0, 0.0 ) );
-			bool bHdFont = vHdTag.r > 0.99 && vHdTag.b > 0.99 && vHdTag.a > 0.5 / 255.0 && vHdTag.a < 1.5 / 255.0;
+			bool bHdFont = vHdTag.r > 0.99 && vHdTag.a > 0.5 / 255.0 && vHdTag.a < 1.5 / 255.0;
 			float2 vHdUV = v.vTexCoord * ( bHdFont ? 2.0 : 1.0 );
+			// Drawing into a 1x render target (see BEACON in build_mod.py): one UI unit per pixel, and
+			// narrower than any screen.
+			bool bHdTarget = abs( ddx( v.vHdUI.x ) ) > 0.75 && v.vHdUI.z > 2.0 / 1100.0;
+			float2 vHdEdge = float2( v.vHdClip.x + 1.0, 1.0 - v.vHdClip.y ) / abs( float2( ddx( v.vHdClip.x ), ddy( v.vHdClip.y ) ) );
+			float2 vHdQuarter = 0.25 * float2( ddx( vHdUV ).x, ddy( vHdUV ).y );
 #ifdef PDX_DIRECTX_9
 			// At UI scale 2 the DX9 GUI is half a screen pixel off D3D9's texel/pixel alignment, so 1:1
 			// glyphs get averaged with their neighbours and 2x magnified art comes out unevenly jagged.
-			// Shift sampling back onto texel centres. Glyphs drawn into the 1x tooltip render target
-			// (two atlas texels per pixel, atlas width from the marker's green channel) are aligned
-			// already and must stay that way so each pixel averages exactly a 2x2 texel block.
+			// Shift sampling back onto texel centres. Render targets are aligned already.
 			float fHdTexelsPerPixel = bHdFont ? ddx( vHdUV ).x * exp2( floor( vHdTag.g * 32.0 + 0.5 ) ) : 1.0;
-			vHdUV += saturate( 2.0 - fHdTexelsPerPixel ) * 0.5 * float2( ddx( vHdUV ).x, ddy( vHdUV ).y );
+			vHdUV += bHdTarget ? 0.0 : saturate( 2.0 - fHdTexelsPerPixel ) * 0.5 * float2( ddx( vHdUV ).x, ddy( vHdUV ).y );
 #endif
 		    float4 OutColor = tex2D( SimpleTexture, vHdUV );
-			// Other textures through here are magnified UI art, e.g. the tooltip render target on DX11.
+			float4 vHdPlain = OutColor * v.vColor;
+			// Other textures through here are magnified UI art, and on DX11 the render targets.
 			{rcas('SimpleTexture')}
 			float3 vHdRGB = vHdSharp;
-			{tooltip_text('SimpleTexture')}
-			OutColor.rgb = bHdFont ? OutColor.rgb : vHdRGB;'''
+			{target_text('SimpleTexture')}
+			OutColor.rgb = bHdFont ? OutColor.rgb : vHdRGB;
+			OutColor = OutColor * v.vColor;
+			if ( bHdTarget )
+			{{
+				OutColor = vHdPlain;
+				OutColor.a = min( OutColor.a, 254.0 / 255.0 );
+				// Dark text is the engine's drop shadow pass, drawn before the text itself; it stays a plain
+				// 1x shadow.
+				float3 vHdLuma = float3( 0.299, 0.587, 0.114 );
+				if ( bHdFont && vHdTag.b > 0.0 && dot( v.vColor.rgb, vHdLuma ) > 0.1 )
+				{{
+					// Coverage of the glyph fill (no shadow) in the four atlas texels under this pixel, 3 bits
+					// each, plus the colour of the fill at 4 bits per channel.
+					float4 vHd00 = tex2Dlod0( SimpleTexture, vHdUV - vHdQuarter );
+					float4 vHd10 = tex2Dlod0( SimpleTexture, vHdUV + float2( vHdQuarter.x, -vHdQuarter.y ) );
+					float4 vHd01 = tex2Dlod0( SimpleTexture, vHdUV + float2( -vHdQuarter.x, vHdQuarter.y ) );
+					float4 vHd11 = tex2Dlod0( SimpleTexture, vHdUV + vHdQuarter );
+					float4 vHdFill = float4( dot( vHd00.rgb, vHdLuma ) * vHd00.a, dot( vHd10.rgb, vHdLuma ) * vHd10.a,
+					                         dot( vHd01.rgb, vHdLuma ) * vHd01.a, dot( vHd11.rgb, vHdLuma ) * vHd11.a );
+					float4 vHdQ = floor( saturate( vHdFill * v.vColor.a / vHdTag.b ) * 7.0 + 0.5 );
+					float3 vHdCol = floor( saturate( v.vColor.rgb * vHdTag.b ) * 15.0 + 0.5 );
+					float3 vHdBits = float3( fmod( vHdQ.w, 2.0 ), fmod( floor( vHdQ.w / 2.0 ), 2.0 ), floor( vHdQ.w / 4.0 ) );
+					// Fully transparent where there is no fill, which leaves the target untouched.
+					OutColor = max( max( vHdQ.x, vHdQ.y ), max( vHdQ.z, vHdQ.w ) ) > 0.5
+						? float4( ( vHdCol * 16.0 + vHdQ.xyz * 2.0 + vHdBits ) / 255.0, 1.0 ) : float4( 0.0, 0.0, 0.0, 0.0 );
+				}}
+				if ( !bHdFont && vHdEdge.x < 0.75 && vHdEdge.y >= 0.75 && vHdEdge.y < 1.75 )
+					OutColor = float4( ( tex2Dlod0( SimpleTexture, float2( 0.5, 0.5 ) ) * v.vColor ).rgb, 254.0 / 255.0 );
+				if ( vHdEdge.x < 0.75 && vHdEdge.y < 0.75 )
+					OutColor = {BEACON};
+			}}
+		    return OutColor;'''
 
+SPRITE_VS_STRUCT = ('\tfloat2  vTexCoord : TEXCOORD0;', '\tfloat2  vTexCoord : TEXCOORD0;\n\tfloat2  vHdUI : TEXCOORD3;')
+SPRITE_VS = ('Out.vPosition  = mul( WorldViewProjectionMatrix, float4( v.vPosition.xyz, 1 ) );',
+             'Out.vPosition  = mul( WorldViewProjectionMatrix, float4( v.vPosition.xyz, 1 ) );\n\t\t\tOut.vHdUI = v.vPosition.xy;')
 SPRITE_ORIG = 'float4 OutColor = tex2D( MapTexture, v.vTexCoord );'
 SPRITE_PATCH = f'''float2 vHdUV = v.vTexCoord;
 {DX9_ALIGN}
 			float4 OutColor = tex2D( MapTexture, vHdUV );
-			// UI art, and on DX9 the tooltip render target, is magnified 2x: sharpen it.
+			// UI art, and on DX9 the render targets, is magnified 2x: sharpen it.
 			{rcas('MapTexture')}
 			float3 vHdRGB = vHdSharp;
-			{tooltip_text('MapTexture')}
+			{target_text('MapTexture')}
 			OutColor.rgb = vHdRGB;'''
 
 # Tooltip text box widened by TOOLTIP_SCALE so tooltips wrap the same as vanilla with the bigger font.
 GUI_PATCHES = {
-    'interface/core.gui': ('maxWidth = 400 #600 #320', f'maxWidth = {round(400 * TOOLTIP_SCALE)} #600 #320'),
+    'interface/core.gui': [('maxWidth = 400 #600 #320', f'maxWidth = {round(400 * TOOLTIP_SCALE)} #600 #320')],
 }
 
+# (original, replacement[, count]) in order; count defaults to the first occurrence, -1 means all.
 SHADER_PATCHES = {
-    'text.shader': (TEXT_ORIG, TEXT_PATCH),
-    **{name: (SPRITE_ORIG, SPRITE_PATCH) for name in (
+    'text.shader': [TEXT_VS_STRUCT, TEXT_VS_3D, TEXT_VS_2D, (TEXT_ORIG, TEXT_PATCH)],
+    **{name: [SPRITE_VS_STRUCT, SPRITE_VS, (SPRITE_ORIG, SPRITE_PATCH, -1)] for name in (
         'buttonstate.shader', 'buttonstate_nodowneffect.shader', 'buttonstate_onlydisable.shader',
         'buttonstate_nodownordisableeffect.shader', 'buttonstate_linear.shader',
         'buttonstate_nontransparent.shader', 'buttonstate_fade_frames_to_black.shader')},
@@ -258,13 +327,15 @@ def convert(args):
 
 def write_patched(game, mod_root):
     patches = {f'gfx/FX/{name}': patch for name, patch in SHADER_PATCHES.items()} | GUI_PATCHES
-    for rel, (orig, patch) in patches.items():
+    for rel, pairs in patches.items():
         src = (game / rel).read_text(encoding='utf-8', errors='surrogateescape')
-        if orig not in src:
-            sys.exit(f'{rel} has changed in this game version; update SHADER_PATCHES/GUI_PATCHES')
+        for orig, patch, *count in pairs:
+            if orig not in src:
+                sys.exit(f'{rel} has changed in this game version; update SHADER_PATCHES/GUI_PATCHES')
+            src = src.replace(orig, patch, *(count or [1]))
         dest = mod_root / rel
         dest.parent.mkdir(parents=True, exist_ok=True)
-        dest.write_text(src.replace(orig, patch), encoding='utf-8', errors='surrogateescape')
+        dest.write_text(src, encoding='utf-8', errors='surrogateescape')
 
 
 def write_descriptors(mod_root, version, path_value):
