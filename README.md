@@ -43,17 +43,20 @@ the texture's actual size, not from the `.fnt` header. A 2× texture shows the w
    (1920×1080 scale) and stretches that 2×, so tooltip text can't use the 2× fonts. The shaders
    recognise that buffer by its background (`tiles_dialog.dds`, alpha 253/255). There they treat the
    anti-aliased 1× text as an implicit outline: bicubic interpolation, then each pixel is redrawn on
-   the dark or bright side of the 50% contour with a one-pixel edge. Tooltips come out crisp, though
-   their letter shapes still only carry 1× detail.
+   the dark or bright side of the 50% contour with a one-pixel edge.
+6. **Bigger tooltip text.** To give that reconstruction more pixels per letter, the tooltip font
+   (`cg_16b` + `hoi_16tooltip3`) is drawn 25% larger: 20px instead of 16px, redrawn from URW Gothic with
+   the vanilla fill and drop shadow re-created. The tooltip text box in `interface/core.gui` is widened
+   by the same factor, so tooltips wrap as in vanilla, just bigger.
 
 The patched shaders are generated from the installed game's own copies at build time. The mod
-overrides `gfx/fonts/*`, `gfx/FX/text.shader` and `gfx/FX/buttonstate*.shader`, so it combines with UI
-mods that move windows around. It conflicts only with mods that replace those same files.
+overrides `gfx/fonts/*`, `gfx/FX/text.shader`, `gfx/FX/buttonstate*.shader` and `interface/core.gui`
+(one width value). It conflicts with mods that replace those same files.
 
 ## Not covered
 
-- Tooltips are reconstructed from a 1× image (see above), so small details such as serifs or thin
-  strokes aren't as faithful as the 2× text elsewhere. Icons inside tooltips get slightly harder edges.
+- Tooltips are still reconstructed from a 1× image (see above), so they're not quite as clean as the
+  2× text elsewhere. Icons inside tooltips get slightly harder edges.
 - Icons and other UI art are still 1× bitmaps; sharpening helps, but they're not truly high-res.
 - Map labels (country, state and arrow text) use separate map shaders and fonts. They're untouched;
   they're world-space and scale with zoom anyway.

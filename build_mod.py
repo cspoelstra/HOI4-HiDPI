@@ -67,6 +67,16 @@ OUTLINES = {
     'hoi_22typewriter_cryllic_inverted': (SERIF, 19.82),
 }
 
+# Tooltip fonts (cg_16b and its fallback file). Tooltips are drawn at 1x into a render target and
+# magnified (see tooltip_text), so they get a bigger font: more pixels per letter for the
+# reconstruction, and easier to read. Fill grey and drop shadow (dx, dy, sigma, strength in vanilla
+# pixels) were measured from the vanilla bitmaps.
+TOOLTIP_SCALE = 1.25
+RESIZED = {
+    'cg_16b': dict(fill=0.77, shadow=(0.0, 1.0, 0.75, 1.2)),
+    'hoi_16tooltip3': dict(fill=0.9, shadow=(0.5, 1.0, 2.0, 1.5)),
+}
+
 DX9_ALIGN = '''#ifdef PDX_DIRECTX_9
 			// At UI scale 2 the DX9 GUI is half a screen pixel off D3D9's texel/pixel alignment, so 1:1
 			// glyphs get averaged with their neighbours and 2x magnified art comes out unevenly jagged.
@@ -183,6 +193,11 @@ SPRITE_PATCH = f'''float2 vHdUV = v.vTexCoord;
 			{tooltip_text('MapTexture')}
 			OutColor.rgb = vHdRGB;'''
 
+# Tooltip text box widened by TOOLTIP_SCALE so tooltips wrap the same as vanilla with the bigger font.
+GUI_PATCHES = {
+    'interface/core.gui': ('maxWidth = 400 #600 #320', f'maxWidth = {round(400 * TOOLTIP_SCALE)} #600 #320'),
+}
+
 SHADER_PATCHES = {
     'text.shader': (TEXT_ORIG, TEXT_PATCH),
     **{name: (SPRITE_ORIG, SPRITE_PATCH) for name in (
@@ -228,6 +243,10 @@ def convert(args):
     if outline:
         spec.ttf, spec.em = outline[0], outline[1]
         spec.embolden = outline[2] if len(outline) > 2 else 0.0
+        if name in RESIZED:
+            spec.resize = TOOLTIP_SCALE
+            spec.fill = RESIZED[name]['fill']
+            spec.shadow = RESIZED[name]['shadow']
     new_fnt, atlas, counts, (w, h) = build_atlas(fnt, tex, spec)
     write_fnt(out_dir / (name + '.fnt'), new_fnt, name + '.dds', w, h)
     save_dds_rgba(out_dir / (name + '.dds'), atlas)
@@ -237,13 +256,15 @@ def convert(args):
     return name, counts, spec
 
 
-def write_shaders(game, out):
-    out.mkdir(parents=True, exist_ok=True)
-    for name, (orig, patch) in SHADER_PATCHES.items():
-        src = (game / 'gfx/FX' / name).read_text()
+def write_patched(game, mod_root):
+    patches = {f'gfx/FX/{name}': patch for name, patch in SHADER_PATCHES.items()} | GUI_PATCHES
+    for rel, (orig, patch) in patches.items():
+        src = (game / rel).read_text(encoding='utf-8', errors='surrogateescape')
         if orig not in src:
-            sys.exit(f'gfx/FX/{name} has changed in this game version; update SHADER_PATCHES')
-        (out / name).write_text(src.replace(orig, patch))
+            sys.exit(f'{rel} has changed in this game version; update SHADER_PATCHES/GUI_PATCHES')
+        dest = mod_root / rel
+        dest.parent.mkdir(parents=True, exist_ok=True)
+        dest.write_text(src.replace(orig, patch), encoding='utf-8', errors='surrogateescape')
 
 
 def write_descriptors(mod_root, version, path_value):
@@ -286,7 +307,7 @@ def main():
             fx = ' +effects' if spec.effects else ''
             print(f'{name:36s} {src:28s}{fx:9s} ' + ' '.join(f'{k}={v}' for k, v in sorted(counts.items())))
 
-    write_shaders(args.game, mod_root / 'gfx/FX')
+    write_patched(args.game, mod_root)
     raw = re.search(r'"rawVersion":\s*"(\d+\.\d+)', (args.game / 'launcher-settings.json').read_text())
     version = f'{raw.group(1)}.*' if raw else '1.*'
     write_descriptors(mod_root, version, '')

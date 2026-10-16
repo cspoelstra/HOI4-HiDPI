@@ -26,6 +26,9 @@ class FontSpec:
     em: float = 0.0
     embolden: float = 0.0
     effects: bool = False  # glyphs carry a baked shadow/outline/bevel around the fill
+    resize: float = 1.0    # render the font larger than vanilla instead of matching it
+    fill: float = 1.0      # resized fonts: grey level of the glyph fill
+    shadow: tuple | None = None  # resized fonts: (dx, dy, sigma, strength) in vanilla 1x pixels
 
 
 @dataclass
@@ -141,7 +144,7 @@ def convert_glyph(g, tex, base, spec, ttf, shift):
     return GlyphResult(g, out, source)
 
 
-def _crop(res):
+def _crop(res, pad=PAD):
     """Trim a 2x cell to its visible bbox, snapped to the 1x grid, and update the glyph metrics."""
     g, rgba = res.glyph, res.rgba
     ys, xs = np.nonzero(rgba[..., 3] >= 1.0 / 255.0)
@@ -150,7 +153,7 @@ def _crop(res):
     x0, y0 = xs.min() // 2, ys.min() // 2
     x1, y1 = (xs.max() + 2) // 2, (ys.max() + 2) // 2
     crop = rgba[y0 * 2:y1 * 2, x0 * 2:x1 * 2]
-    ng = replace(g, w=x1 - x0, h=y1 - y0, xo=g.xo - PAD + x0, yo=g.yo - PAD + y0)
+    ng = replace(g, w=x1 - x0, h=y1 - y0, xo=g.xo - pad + x0, yo=g.yo - pad + y0)
     return GlyphResult(ng, crop, res.source)
 
 
@@ -171,12 +174,75 @@ def _pack(results, width, empty_size):
     return pos, y + shelf + GAP
 
 
+def _gaussian_blur(a, sigma):
+    r = max(1, int(np.ceil(sigma * 3)))
+    k = np.exp(-0.5 * (np.arange(-r, r + 1) / sigma) ** 2)
+    k /= k.sum()
+    a = np.apply_along_axis(lambda x: np.convolve(np.pad(x, r), k, 'valid'), 1, a)
+    return np.apply_along_axis(lambda x: np.convolve(np.pad(x, r), k, 'valid'), 0, a)
+
+
+def _shifted(a, dx, dy):
+    h, w = a.shape
+    return np.asarray(Image.fromarray(a.astype(np.float32), 'F').transform(
+        (w, h), Image.AFFINE, (1, 0, -dx, 0, 1, -dy), Image.BILINEAR))
+
+
+def resized_glyph(g, tex, font, spec, ttf, shift):
+    """Glyph `g` redrawn at spec.resize times its vanilla size, with a synthesised drop shadow.
+
+    The result is a GlyphResult whose cell origin sits `pad` 1x pixels above-left of the pen
+    position at the top of the line, ready for _crop(pad=pad).
+    """
+    s = spec.resize
+    pad = 6
+    base = round(font.base * s)
+    cw, ch = max(1, round(g.xa * s)) + 2 * pad, round(font.line_height * s) + 2 * pad
+    blank = Glyph(g.id, 0, 0, round(g.w * s), round(g.h * s), round(g.xo * s), round(g.yo * s), round(g.xa * s))
+    if g.w <= 0 or g.h <= 0 or tex[g.y:g.y + g.h, g.x:g.x + g.w, 3].max() < 1.0 / 255.0:
+        return GlyphResult(blank, None, 'empty')
+    if ttf.has(g.id):
+        m2 = ttf.render(g.id, cw, ch, pad + shift[0] * s, pad + base + shift[1] * s, scale=2, ss=4)
+        source = 'ttf'
+    else:
+        cell = np.pad(tex[g.y:g.y + g.h, g.x:g.x + g.w], ((PAD, PAD), (PAD, PAD), (0, 0)))
+        traced = trace.trace_coverage(fill_target(cell, spec.effects), scale=2 * s)
+        m2 = np.zeros((ch * 2, cw * 2), dtype=np.float32)
+        ox, oy = round((pad + (g.xo - PAD) * s) * 2), round((pad + (g.yo - PAD) * s) * 2)
+        th, tw = traced.shape
+        y0, x0 = max(oy, 0), max(ox, 0)
+        y1, x1 = min(oy + th, m2.shape[0]), min(ox + tw, m2.shape[1])
+        m2[y0:y1, x0:x1] = traced[y0 - oy:y1 - oy, x0 - ox:x1 - ox]
+        source = 'traced'
+    if spec.shadow:
+        dx, dy, sigma, strength = spec.shadow
+        sh = np.clip(strength * _gaussian_blur(_shifted(m2, 2 * dx * s, 2 * dy * s), 2 * sigma * s), 0, 1)
+    else:
+        sh = np.zeros_like(m2)
+    out = np.zeros(m2.shape + (4,), dtype=np.float32)
+    out[..., 3] = m2 + (1 - m2) * sh
+    out[..., :3] = (m2 * spec.fill / np.maximum(out[..., 3], 1e-6))[..., None]
+    out[out[..., 3] < 1.0 / 255.0] = 0.0
+    return GlyphResult(replace(blank, xo=0, yo=0, w=cw, h=ch), out, source)
+
+
 def build_atlas(font: BMFont, tex, spec: FontSpec):
     """Returns (BMFont with 1x metrics, 2x RGBA atlas, glyph counts per source, 1x atlas size)."""
-    ttf = TTFGlyphs(spec.ttf, spec.em, spec.embolden) if spec.ttf else None
-    shift = font_shift(font, tex, spec, ttf) if ttf else (0.0, 0.0)
-    results = [convert_glyph(g, tex, font.base, spec, ttf, shift) for g in font.glyphs]
-    results = [_crop(r) if r.rgba is not None else r for r in results]
+    if spec.resize != 1.0:
+        # Shift is measured at the vanilla size, where the original bitmaps are a reference.
+        shift = font_shift(font, tex, spec, TTFGlyphs(spec.ttf, spec.em, spec.embolden))
+        ttf = TTFGlyphs(spec.ttf, spec.em * spec.resize, spec.embolden * spec.resize)
+        results = [resized_glyph(g, tex, font, spec, ttf, shift) for g in font.glyphs]
+        results = [_crop(r, pad=6) if r.rgba is not None else r for r in results]
+        common = dict(font.common, lineHeight=str(round(font.line_height * spec.resize)),
+                      base=str(round(font.base * spec.resize)))
+        kernings = [(a, b, round(amt * spec.resize)) for a, b, amt in font.kernings]
+        font = BMFont(dict(font.info), common, font.glyphs, kernings)
+    else:
+        ttf = TTFGlyphs(spec.ttf, spec.em, spec.embolden) if spec.ttf else None
+        shift = font_shift(font, tex, spec, ttf) if ttf else (0.0, 0.0)
+        results = [convert_glyph(g, tex, font.base, spec, ttf, shift) for g in font.glyphs]
+        results = [_crop(r) if r.rgba is not None else r for r in results]
 
     area = sum(r.glyph.w * r.glyph.h for r in results if r.rgba is not None)
     width = 128

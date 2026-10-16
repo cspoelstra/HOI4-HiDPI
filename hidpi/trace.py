@@ -11,24 +11,24 @@ def available():
     return shutil.which('potrace') is not None
 
 
-def trace_coverage(cov_1x, alphamax=0.9):
-    """2x anti-aliased coverage from a 1x coverage map, by vectorising it with potrace.
+def trace_coverage(cov_1x, alphamax=0.9, scale=2.0):
+    """`scale`x anti-aliased coverage from a 1x coverage map, by vectorising it with potrace.
 
     The 1x map is interpolated to OVERSAMPLE x and thresholded at 50% (its iso-contour), traced into
-    Bezier outlines, and potrace rasterises those back at 2x with linear-gamma anti-aliasing.
+    Bezier outlines, and potrace rasterises those back at `scale`x with linear-gamma anti-aliasing.
     """
     h, w = cov_1x.shape
     up = np.asarray(Image.fromarray(cov_1x.astype(np.float32), 'F')
                     .resize((w * OVERSAMPLE, h * OVERSAMPLE), Image.BICUBIC))
     bits = up >= 0.5
     if not bits.any():
-        return np.zeros((h * 2, w * 2), dtype=np.float32)
+        return np.zeros((round(h * scale), round(w * scale)), dtype=np.float32)
     H, W = bits.shape
     pbm = f'P4\n{W} {H}\n'.encode() + np.packbits(bits, axis=1).tobytes()
     out = subprocess.run(
-        ['potrace', '-b', 'pgm', '-x', str(2 / OVERSAMPLE), '-G', '1', '-a', str(alphamax), '-o', '-', '-'],
+        ['potrace', '-b', 'pgm', '-x', str(scale / OVERSAMPLE), '-G', '1', '-a', str(alphamax), '-o', '-', '-'],
         input=pbm, capture_output=True, check=True).stdout
-    return _parse_pgm(out, w * 2, h * 2)
+    return _parse_pgm(out, round(w * scale), round(h * scale))
 
 
 def _parse_pgm(data, w, h):
