@@ -8,9 +8,12 @@ from . import trace
 from .imageops import inpaint, luminance, premultiply, sharpen_coverage, unpremultiply, upscale2x
 from .ttf import TTFGlyphs
 
-# Corner texels of every generated atlas get this RGBA value; text.shader looks for it to know the
-# texture is stored at 2x (the engine derives glyph UVs from the real texture size).
-MARKER = np.array([1.0, 0.0, 1.0, 1.0 / 255.0], dtype=np.float32)
+# Corner texels of every generated atlas are magenta with alpha 1/255; text.shader looks for that to
+# know the texture is stored at 2x (the engine derives glyph UVs from the real texture size). Green
+# carries log2 of the atlas width / 32, which lets the shader tell 1:1 screen text from text drawn
+# minified into the 1x tooltip render target.
+def marker(width):
+    return np.array([1.0, np.log2(width) / 32.0, 1.0, 1.0 / 255.0], dtype=np.float32)
 
 PAD = 2          # 1x pixels of working margin around each original glyph cell
 GAP = 1          # 1x pixels between packed glyphs and around the atlas border
@@ -200,6 +203,6 @@ def build_atlas(font: BMFont, tex, spec: FontSpec):
         glyphs.append(replace(g, x=x, y=y))
     for cy in (0, -1):
         for cx in (0, -1):
-            atlas[cy, cx] = MARKER
+            atlas[cy, cx] = marker(atlas.shape[1])
 
     return BMFont(dict(font.info), dict(font.common), glyphs, list(font.kernings)), atlas, counts, (width, height)

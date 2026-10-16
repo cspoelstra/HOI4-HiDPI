@@ -155,9 +155,17 @@ TEXT_PATCH = f'''// Font atlases from the HiDPI Text mod are stored at twice the
 			// and carry magenta, alpha 1/255 corner texels. The engine derives glyph UVs from the real
 			// texture size, so for those textures the UVs come out halved.
 			float4 vHdTag = tex2Dlod0( SimpleTexture, float2( 0.0, 0.0 ) );
-			bool bHdFont = vHdTag.r > 0.99 && vHdTag.g < 0.01 && vHdTag.b > 0.99 && vHdTag.a > 0.5 / 255.0 && vHdTag.a < 1.5 / 255.0;
+			bool bHdFont = vHdTag.r > 0.99 && vHdTag.b > 0.99 && vHdTag.a > 0.5 / 255.0 && vHdTag.a < 1.5 / 255.0;
 			float2 vHdUV = v.vTexCoord * ( bHdFont ? 2.0 : 1.0 );
-{DX9_ALIGN}
+#ifdef PDX_DIRECTX_9
+			// At UI scale 2 the DX9 GUI is half a screen pixel off D3D9's texel/pixel alignment, so 1:1
+			// glyphs get averaged with their neighbours and 2x magnified art comes out unevenly jagged.
+			// Shift sampling back onto texel centres. Glyphs drawn into the 1x tooltip render target
+			// (two atlas texels per pixel, atlas width from the marker's green channel) are aligned
+			// already and must stay that way so each pixel averages exactly a 2x2 texel block.
+			float fHdTexelsPerPixel = bHdFont ? ddx( vHdUV ).x * exp2( floor( vHdTag.g * 32.0 + 0.5 ) ) : 1.0;
+			vHdUV += saturate( 2.0 - fHdTexelsPerPixel ) * 0.5 * float2( ddx( vHdUV ).x, ddy( vHdUV ).y );
+#endif
 		    float4 OutColor = tex2D( SimpleTexture, vHdUV );
 			// Other textures through here are magnified UI art, e.g. the tooltip render target on DX11.
 			{rcas('SimpleTexture')}
