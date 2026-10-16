@@ -27,7 +27,10 @@ STEAM = Path.home() / '.local/share/Steam'
 DEFAULT_GAME = STEAM / 'steamapps/common/Hearts of Iron IV'
 PROTON_DOCS = STEAM / 'steamapps/compatdata/394360/pfx/drive_c/users/steamuser/Documents/Paradox Interactive/Hearts of Iron IV'
 PROTON_DOCS_WIN = 'C:/users/steamuser/Documents/Paradox Interactive/Hearts of Iron IV'
-FONTS = Path(__file__).parent / 'fonts'
+REPO = Path(__file__).parent
+FONTS = REPO / 'fonts'
+LICENSES = REPO / 'licenses'
+REPO_URL = 'https://github.com/cspoelstra/HOI4-HiDPI'
 
 # Drawn in world space by the map shaders, not text.shader.
 SKIP = {'hoi_mapfont4', 'hoi_arrow_font'}
@@ -78,6 +81,16 @@ OUTLINES = {
     'hoi4_typewriter16_inverted': (PODKOVA_SEMIBOLD, 15.0),
     'hoi4_typewriter22': (PODKOVA_MEDIUM, 19.94),
     'hoi4_typewriter22_inverted': (PODKOVA_MEDIUM, 19.94),
+}
+
+# Licence texts in licenses/ for each family of outline fonts the atlases are drawn from; they ship with
+# the mod, listed in its CREDITS.txt.
+FONT_LICENSES = {
+    'Ubuntu': ['Ubuntu-Font-Licence-1.0.txt'],
+    'URW Gothic': ['URW-base35-LICENSE.txt', 'URW-base35-COPYING-AGPL-3.0.txt'],
+    'Liberation Sans': ['Liberation-OFL.txt'],
+    'Liberation Serif': ['Liberation-OFL.txt'],
+    'Podkova': ['Podkova-OFL.txt'],
 }
 
 # Tooltip fonts (cg_16b and its fallback file) are drawn straight from their outline font with a
@@ -355,9 +368,39 @@ def write_patched(game, mod_root):
         dest.write_text(src, encoding='utf-8', errors='surrogateescape')
 
 
-def write_descriptors(mod_root, version, path_value):
+def write_credits(mod_root, used):
+    """CREDITS.txt and licence texts for the outline fonts in `used` ({font file: [game font names]})."""
+    lines = [
+        f'{MOD_NAME} for Hearts of Iron IV',
+        REPO_URL,
+        '',
+        'The font textures (gfx/fonts) are redrawings of Hearts of Iron IV\'s fonts at twice the resolution,',
+        'and the shaders (gfx/FX) are modified copies of the game\'s own. The game\'s assets remain the',
+        'property of Paradox Interactive. The build script that generates this mod is MIT licensed.',
+        '',
+        'Font textures drawn from the outline fonts below are distributed under the licence of the font',
+        'they were drawn from; the licence texts are in the licenses folder. Their source is that font plus',
+        'the build script in the repository above. The other font textures are traced from the game\'s own',
+        'bitmaps.',
+    ]
+    (mod_root / 'licenses').mkdir()
+    for path, names in sorted(used.items(), key=lambda kv: kv[0]):
+        info = TTFont(path, lazy=True)['name']
+        family = info.getDebugName(16) or info.getDebugName(1)
+        if family not in FONT_LICENSES:
+            sys.exit(f'{family} ({path}) has no entry in FONT_LICENSES')
+        for licence in FONT_LICENSES[family]:
+            shutil.copy(LICENSES / licence, mod_root / 'licenses' / licence)
+        lines += ['', f'{family} ({Path(path).name})', '  ' + ' '.join(info.getDebugName(0).split()),
+                  '  Licence: ' + ', '.join(FONT_LICENSES[family]), '  Used for: ' + ', '.join(sorted(names))]
+    (mod_root / 'CREDITS.txt').write_text('\n'.join(lines) + '\n')
+
+
+def write_descriptors(mod_root, version, path_value, remote_file_id=None):
     body = (f'version="1.0"\nname="{MOD_NAME}"\ntags={{\n\t"Graphics"\n\t"Utilities"\n}}\n'
-            f'supported_version="{version}"\n')
+            f'picture="thumbnail.png"\nsupported_version="{version}"\n')
+    if remote_file_id:
+        body += f'remote_file_id="{remote_file_id}"\n'
     (mod_root / 'descriptor.mod').write_text(body)
     return body + f'path="{path_value}"\n'
 
@@ -389,13 +432,18 @@ def main():
 
     names = referenced_fonts(args.game)
     jobs = [(n, fonts_dir, out_fonts, outlines.get(n)) for n in names]
+    used = {}
     with ProcessPoolExecutor(args.jobs) as pool:
         for name, counts, spec in pool.map(convert, jobs):
             src = Path(spec.ttf).name if spec.ttf else 'bitmap'
             fx = ' +effects' if spec.effects else ''
             print(f'{name:36s} {src:28s}{fx:9s} ' + ' '.join(f'{k}={v}' for k, v in sorted(counts.items())))
+            if counts.get('ttf'):
+                used.setdefault(spec.ttf, []).append(name)
 
     write_patched(args.game, mod_root)
+    write_credits(mod_root, used)
+    shutil.copy(REPO / 'workshop/thumbnail.png', mod_root / 'thumbnail.png')
     raw = re.search(r'"rawVersion":\s*"(\d+\.\d+)', (args.game / 'launcher-settings.json').read_text())
     version = f'{raw.group(1)}.*' if raw else '1.*'
     write_descriptors(mod_root, version, '')
@@ -404,11 +452,14 @@ def main():
     if args.install:
         user_dir = args.install
         dest = user_dir / 'mod' / MOD_DIR
+        # Keep the Workshop item id the Paradox launcher adds on upload, so later uploads update it.
+        mod_file = user_dir / 'mod' / f'{MOD_DIR}.mod'
+        remote = re.search(r'remote_file_id="(\d+)"', mod_file.read_text()) if mod_file.exists() else None
         if dest.exists():
             shutil.rmtree(dest)
         shutil.copytree(mod_root, dest)
         path_value = f'{PROTON_DOCS_WIN}/mod/{MOD_DIR}' if user_dir == PROTON_DOCS else str(dest)
-        (user_dir / 'mod' / f'{MOD_DIR}.mod').write_text(write_descriptors(dest, version, path_value))
+        mod_file.write_text(write_descriptors(dest, version, path_value, remote and remote.group(1)))
         print(f'installed {dest}')
 
 

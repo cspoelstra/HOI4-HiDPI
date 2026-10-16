@@ -1,0 +1,37 @@
+[h1]HiDPI Text (2x)[/h1]
+Sharp UI text for Hearts of Iron IV on 4K screens.
+
+At UI scale 2.0 the game stretches every font to twice its size, which makes all text blurry. This mod replaces every UI font with one drawn at twice the resolution, so text is as sharp as the rest of a 4K screen. Spacing and layout stay exactly as in vanilla.
+
+[img]https://raw.githubusercontent.com/cspoelstra/HOI4-HiDPI/main/docs/compare_topbar.png[/img]
+[img]https://raw.githubusercontent.com/cspoelstra/HOI4-HiDPI/main/docs/compare_tooltip.png[/img]
+[img]https://raw.githubusercontent.com/cspoelstra/HOI4-HiDPI/main/docs/compare_card.png[/img]
+
+[h2]What it does[/h2]
+[list]
+[*]Every UI font is redrawn at twice the resolution from matching outline fonts, or traced from the game's own bitmaps where no free outline font exists.
+[*]Tooltips are sharp too. The game draws them into a low-resolution buffer, and the mod's shaders carry the full detail through it.
+[*]Removes the half-pixel blur the DirectX 9 renderer adds at UI scale 2.0, and lightly sharpens the magnified UI art.
+[*]The special-project typewriter font, which has no free outline version, is replaced by the clean slab serif Podkova.
+[/list]
+
+[h2]Setup[/h2]
+[olist]
+[*]Run the game at 3840×2160, fullscreen or borderless.
+[*]In the settings, set [b]UI Scaling (Experimental)[/b] to [b]2.0[/b].
+[*]Enable the mod in your playset.
+[/olist]
+
+[h2]Compatibility[/h2]
+[list]
+[*]Tested on game version 1.19.3 at UI scale 2.0 on a 3840×2160 screen, with both the DirectX 9 and DirectX 11 renderers. [b]Other UI scales and resolutions have not been tested.[/b]
+[*]Ironman and achievements work: the mod doesn't change the game checksum.
+[*]Conflicts with mods that replace the fonts (gfx/fonts) or the text and buttonstate shaders (gfx/FX).
+[*]Chinese, Japanese and Korean fonts are not upgraded.
+[*]A game patch can change the shaders this mod replaces. If the interface looks wrong after an update, disable the mod until it's updated.
+[/list]
+
+[h2]Credits and source[/h2]
+The build script that generates this mod is open source (MIT): [url=https://github.com/cspoelstra/HOI4-HiDPI]github.com/cspoelstra/HOI4-HiDPI[/url]
+
+The font textures are drawn from Ubuntu (Ubuntu Font Licence 1.0), URW Gothic (AGPL-3.0 with font exception), Liberation Sans and Serif, and Podkova (both SIL Open Font License 1.1). CREDITS.txt and the licenses folder in the mod list the details.

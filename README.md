@@ -68,6 +68,8 @@ mods that replace those same files.
 
 ## Not covered
 
+- Only tested at UI scale 2.0 on a 3840×2160 screen, with the DX9 and DX11 renderers. Other UI scales and
+  resolutions haven't been tested.
 - Tooltip and button text keeps 8 levels of anti-aliasing per pixel instead of 256. That doesn't
   show at this size, but it is a limit.
 - Button labels in fonts with baked effects (e.g. the main menu's header font) stay 1× in their
@@ -107,6 +109,17 @@ with an error if a shader changed in a way it doesn't recognise.
 
 Uninstall: disable the mod, then delete `mod/hidpi_text` and `mod/hidpi_text.mod`.
 
+## Publishing to the Steam Workshop
+
+1. Build and install it with `python3 build_mod.py --install`. The built mod includes `thumbnail.png`
+   (from `workshop/`), `CREDITS.txt` and the font licences.
+2. In the Paradox launcher, upload **HiDPI Text (2x)** from the mods section and paste
+   `workshop/description.bbcode` as the description.
+3. The launcher adds the Workshop item's `remote_file_id` to `mod/hidpi_text.mod`. `--install` keeps it,
+   so later uploads update the same item.
+
+Rebuild and upload again after game patches that change `text.shader` or the `buttonstate` shaders.
+
 ## Layout
 
 - `build_mod.py`: entry point; font→outline mapping, mod packaging and install.
@@ -118,9 +131,15 @@ Uninstall: disable the mod, then delete `mod/hidpi_text` and `mod/hidpi_text.mod
 - `hidpi/imageops.py`: inpainting, 2× resampling, fallback bitmap upscaling.
 - `hidpi/preview.py`: offline before/after renderer for tuning, without starting the game.
 - `fonts/`: bundled outline fonts.
+- `licenses/`: licence texts of the outline fonts, shipped with the mod.
+- `workshop/`: Workshop thumbnail and description.
 
 ## License
 
-MIT; see [LICENSE](LICENSE). Podkova (`fonts/`) is © The Podkova Project Authors under the SIL Open
-Font License 1.1; see [fonts/Podkova-OFL.txt](fonts/Podkova-OFL.txt). The generated mod contains material derived from Hearts of Iron IV
-assets, which remain the property of Paradox Interactive; build it yourself from your own install.
+The code is MIT; see [LICENSE](LICENSE). Podkova (`fonts/`) is © The Podkova Project Authors under the
+SIL Open Font License 1.1; see [licenses/Podkova-OFL.txt](licenses/Podkova-OFL.txt).
+
+The generated mod contains material derived from Hearts of Iron IV assets, which remain the property of
+Paradox Interactive. Its font textures are distributed under the licence of the outline font each was
+drawn from; the build writes the details to the mod's `CREDITS.txt` and copies the licence texts from
+`licenses/`.
