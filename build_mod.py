@@ -13,6 +13,8 @@ from concurrent.futures import ProcessPoolExecutor
 from pathlib import Path
 
 import numpy as np
+from fontTools.ttLib import TTFont
+from fontTools.varLib.instancer import instantiateVariableFont
 from PIL import Image
 
 from hidpi.bmfont import load_rgba, read_fnt, save_dds_rgba, write_fnt
@@ -25,6 +27,7 @@ STEAM = Path.home() / '.local/share/Steam'
 DEFAULT_GAME = STEAM / 'steamapps/common/Hearts of Iron IV'
 PROTON_DOCS = STEAM / 'steamapps/compatdata/394360/pfx/drive_c/users/steamuser/Documents/Paradox Interactive/Hearts of Iron IV'
 PROTON_DOCS_WIN = 'C:/users/steamuser/Documents/Paradox Interactive/Hearts of Iron IV'
+FONTS = Path(__file__).parent / 'fonts'
 
 # Drawn in world space by the map shaders, not text.shader.
 SKIP = {'hoi_mapfont4', 'hoi_arrow_font'}
@@ -38,6 +41,12 @@ GOTHIC_DEMI = 'URW Gothic:style=Demi'
 GOTHIC_BOOK = 'URW Gothic:style=Book'
 SANS = 'Liberation Sans:style=Regular'
 SERIF = 'Liberation Serif:style=Regular'
+# The hoi4_typewriter fonts (AFL Font nonmetric) have no freely licensed outlines; their traced bitmaps
+# come out lumpy. They are drawn from Podkova, the best-fitting openly licensed slab serif, at weights
+# that match the vanilla strokes. Podkova is bundled in fonts/ (SIL OFL) as a variable font, given here
+# as (file, weight).
+PODKOVA_SEMIBOLD = ('Podkova[wght].ttf', 600)
+PODKOVA_MEDIUM = ('Podkova[wght].ttf', 500)
 OUTLINES = {
     'hoi_16mbs': (UBUNTU_B, 12.59),
     'hoi_16mbs_cryllic': (UBUNTU_B, 12.59),
@@ -65,13 +74,16 @@ OUTLINES = {
     'hoi_22typewriter_cryllic': (SERIF, 19.82),
     'hoi_22typewriter_inverted': (SERIF, 19.82),
     'hoi_22typewriter_cryllic_inverted': (SERIF, 19.82),
+    'hoi4_typewriter16': (PODKOVA_SEMIBOLD, 15.0),
+    'hoi4_typewriter16_inverted': (PODKOVA_SEMIBOLD, 15.0),
+    'hoi4_typewriter22': (PODKOVA_MEDIUM, 19.94),
+    'hoi4_typewriter22_inverted': (PODKOVA_MEDIUM, 19.94),
 }
 
-# Tooltip fonts (cg_16b and its fallback file) are drawn 25% larger than vanilla, which is easier to
-# read. Fill grey and drop shadow (dx, dy, sigma, strength in vanilla pixels) were measured from the
-# vanilla bitmaps.
-TOOLTIP_SCALE = 1.25
-RESIZED = {
+# Tooltip fonts (cg_16b and its fallback file) are drawn straight from their outline font with a
+# synthesised drop shadow, so text.shader knows the fill grey and can carry them into tooltips at 2x.
+# Fill grey and drop shadow (dx, dy, sigma, strength in pixels) were measured from the vanilla bitmaps.
+REDRAWN = {
     'cg_16b': dict(fill=0.77, shadow=(0.0, 1.0, 0.75, 1.2)),
     'hoi_16tooltip3': dict(fill=0.9, shadow=(0.5, 1.0, 2.0, 1.5)),
 }
@@ -261,11 +273,6 @@ SPRITE_PATCH = f'''float2 vHdUV = v.vTexCoord;
 			{target_text('MapTexture')}
 			OutColor.rgb = vHdRGB;'''
 
-# Tooltip text box widened by TOOLTIP_SCALE so tooltips wrap the same as vanilla with the bigger font.
-GUI_PATCHES = {
-    'interface/core.gui': [('maxWidth = 400 #600 #320', f'maxWidth = {round(400 * TOOLTIP_SCALE)} #600 #320')],
-}
-
 # (original, replacement[, count]) in order; count defaults to the first occurrence, -1 means all.
 SHADER_PATCHES = {
     'text.shader': [TEXT_VS_STRUCT, TEXT_VS_3D, TEXT_VS_2D, (TEXT_ORIG, TEXT_PATCH)],
@@ -282,7 +289,16 @@ def referenced_fonts(game):
     return sorted(set(re.findall(r'"gfx/fonts/([A-Za-z0-9_]+)"', text)) - SKIP)
 
 
-def font_file(pattern):
+def font_file(pattern, cache):
+    """Outline font file for an OUTLINES entry: a fontconfig pattern, or a bundled variable font and
+    weight, which is instanced into `cache`."""
+    if isinstance(pattern, tuple):
+        file, weight = pattern
+        path = cache / f'{file.split("[")[0]}-{weight}.ttf'
+        if not path.exists():
+            cache.mkdir(parents=True, exist_ok=True)
+            instantiateVariableFont(TTFont(FONTS / file), {'wght': weight}).save(path)
+        return str(path)
     try:
         path = subprocess.run(['fc-match', '-f', '%{file}', pattern], capture_output=True, text=True).stdout
     except FileNotFoundError:
@@ -312,10 +328,11 @@ def convert(args):
     if outline:
         spec.ttf, spec.em = outline[0], outline[1]
         spec.embolden = outline[2] if len(outline) > 2 else 0.0
-        if name in RESIZED:
-            spec.resize = TOOLTIP_SCALE
-            spec.fill = RESIZED[name]['fill']
-            spec.shadow = RESIZED[name]['shadow']
+        spec.substitute = isinstance(OUTLINES[name][0], tuple)
+        if name in REDRAWN:
+            spec.redraw = True
+            spec.fill = REDRAWN[name]['fill']
+            spec.shadow = REDRAWN[name]['shadow']
     new_fnt, atlas, counts, (w, h) = build_atlas(fnt, tex, spec)
     write_fnt(out_dir / (name + '.fnt'), new_fnt, name + '.dds', w, h)
     save_dds_rgba(out_dir / (name + '.dds'), atlas)
@@ -326,12 +343,12 @@ def convert(args):
 
 
 def write_patched(game, mod_root):
-    patches = {f'gfx/FX/{name}': patch for name, patch in SHADER_PATCHES.items()} | GUI_PATCHES
+    patches = {f'gfx/FX/{name}': patch for name, patch in SHADER_PATCHES.items()}
     for rel, pairs in patches.items():
         src = (game / rel).read_text(encoding='utf-8', errors='surrogateescape')
         for orig, patch, *count in pairs:
             if orig not in src:
-                sys.exit(f'{rel} has changed in this game version; update SHADER_PATCHES/GUI_PATCHES')
+                sys.exit(f'{rel} has changed in this game version; update SHADER_PATCHES')
             src = src.replace(orig, patch, *(count or [1]))
         dest = mod_root / rel
         dest.parent.mkdir(parents=True, exist_ok=True)
@@ -364,7 +381,7 @@ def main():
 
     outlines = {}
     for name, (pattern, *rest) in OUTLINES.items():
-        path = font_file(pattern)
+        path = font_file(pattern, args.out / 'fonts')
         if path:
             outlines[name] = (path, *rest)
         else:

@@ -7,6 +7,7 @@ blurry. It works on both the DirectX 9 (legacy) and DirectX 11 renderers.
 ![decisions](docs/compare_decisions.png)
 ![top bar](docs/compare_topbar.png)
 ![tooltip](docs/compare_tooltip.png)
+![special project card](docs/compare_card.png)
 
 ## Why the built-in scaling is blurry
 
@@ -26,10 +27,13 @@ the texture's actual size, not from the `.fnt` header. A 2× texture shows the w
      - Ubuntu: most of the UI.
      - URW Gothic, the metric twin of Century Gothic: tooltips.
      - Liberation Sans / Serif: the Arial and Times fonts.
+   - The special-project typewriter font (AFL Font) has no freely licensed outlines, and traced from
+     its 16px bitmaps it came out lumpy and uneven. It's drawn from Podkova instead, the openly licensed
+     slab serif that fits its shapes best, at weights matching the vanilla strokes. Each glyph is centred
+     on where the vanilla glyph sat, so the original spacing still fits.
    - Baked-in effects are kept: the metallic gradients, bevels and drop shadows are separated from the
      glyph fill, upscaled, and composited under the crisp fill.
-   - Fonts with no free outline available (the Orator headers, the typewriter font and the Garamonds)
-     are vectorised from the game's own bitmaps with potrace, then rendered at 2×. This keeps their exact
+   - Fonts with no free outline available (the Orator headers and the Garamonds) are vectorised from the game's own bitmaps with potrace, then rendered at 2×. This keeps their exact
      look with clean edges.
 2. **Patched `gfx/FX/text.shader`.** The generated atlases carry a magic value in their four corner
    texels. The text shader checks for it and doubles the texture coordinates only for those textures.
@@ -53,14 +57,14 @@ the texture's actual size, not from the `.fnt` header. A 2× texture shows the w
      look for the marker. If it's there, they draw each text texel as 2×2 screen pixels from its
      sub-pixel coverage, over the surrounding background.
    - Fonts with baked effects (bevels, outlines) are still drawn the vanilla way there, at 1×.
-6. **Bigger tooltip text.** The tooltip font (`cg_16b` + `hoi_16tooltip3`) is drawn 25% larger: 20px
-   instead of 16px, redrawn from URW Gothic. The tooltip text box in `interface/core.gui` is widened by
-   the same factor, so tooltips wrap as in vanilla, just bigger. Inside tooltips the text is drawn
-   without the font's drop shadow, which was barely visible on the dark tooltip background.
+6. **Redrawn tooltip font.** The tooltip font (`cg_16b` + `hoi_16tooltip3`) is drawn straight from URW
+   Gothic with the vanilla fill and drop shadow re-created, so the shaders know its fill colour.
+   Inside tooltips the text is drawn without the drop shadow, which was barely visible on the dark
+   tooltip background.
 
 The patched shaders are generated from the installed game's own copies at build time. The mod
-overrides `gfx/fonts/*`, `gfx/FX/text.shader`, `gfx/FX/buttonstate*.shader` and `interface/core.gui`
-(one width value). It conflicts with mods that replace those same files.
+overrides `gfx/fonts/*`, `gfx/FX/text.shader` and `gfx/FX/buttonstate*.shader`. It conflicts with
+mods that replace those same files.
 
 ## Not covered
 
@@ -77,7 +81,8 @@ overrides `gfx/fonts/*`, `gfx/FX/text.shader`, `gfx/FX/buttonstate*.shader` and 
 
 Requirements: Python 3 with `numpy`, `Pillow` and `fontTools`; `fc-match` (fontconfig); `potrace`; and
 the Ubuntu, URW Gothic (`gsfonts`) and Liberation font packages. A missing outline font isn't fatal:
-those fonts are traced from their bitmaps instead and the script prints a warning. Without potrace,
+those fonts are traced from their bitmaps instead and the script prints a warning. Podkova is
+bundled in `fonts/`. Without potrace,
 bitmap fonts fall back to a simpler, softer upscaler.
 
 ```bash
@@ -112,8 +117,10 @@ Uninstall: disable the mod, then delete `mod/hidpi_text` and `mod/hidpi_text.mod
 - `hidpi/trace.py`: potrace-based vectorisation of bitmap glyphs.
 - `hidpi/imageops.py`: inpainting, 2× resampling, fallback bitmap upscaling.
 - `hidpi/preview.py`: offline before/after renderer for tuning, without starting the game.
+- `fonts/`: bundled outline fonts.
 
 ## License
 
-MIT; see [LICENSE](LICENSE). The generated mod contains material derived from Hearts of Iron IV
+MIT; see [LICENSE](LICENSE). Podkova (`fonts/`) is © The Podkova Project Authors under the SIL Open
+Font License 1.1; see [fonts/Podkova-OFL.txt](fonts/Podkova-OFL.txt). The generated mod contains material derived from Hearts of Iron IV
 assets, which remain the property of Paradox Interactive; build it yourself from your own install.

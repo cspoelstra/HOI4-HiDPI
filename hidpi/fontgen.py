@@ -17,7 +17,7 @@ def marker(width, fill):
 
 
 def fill_level(atlas, spec):
-    if spec.resize != 1.0:
+    if spec.redraw:
         return spec.fill
     if spec.effects:
         return 0.0
@@ -34,10 +34,11 @@ class FontSpec:
     ttf: str | None = None
     em: float = 0.0
     embolden: float = 0.0
+    substitute: bool = False  # the outline font is a different typeface: use it for every glyph it has
     effects: bool = False  # glyphs carry a baked shadow/outline/bevel around the fill
-    resize: float = 1.0    # render the font larger than vanilla instead of matching it
-    fill: float = 1.0      # resized fonts: grey level of the glyph fill
-    shadow: tuple | None = None  # resized fonts: (dx, dy, sigma, strength) in vanilla 1x pixels
+    redraw: bool = False   # draw glyphs straight from the outline font with a synthesised shadow
+    fill: float = 1.0      # redrawn fonts: grey level of the glyph fill
+    shadow: tuple | None = None  # redrawn fonts: (dx, dy, sigma, strength) in 1x pixels
 
 
 @dataclass
@@ -59,6 +60,10 @@ def _ncc(a, b):
     b = b - b.mean()
     d = np.sqrt((a * a).sum() * (b * b).sum())
     return float((a * b).sum() / d) if d > 0 else 0.0
+
+
+def _ink_centre(cov):
+    return float(cov.sum(axis=0) @ np.arange(cov.shape[1]) / cov.sum())
 
 
 def _align(ttf, cp, cw, ch, pen_x, base_y, target):
@@ -118,7 +123,12 @@ def convert_glyph(g, tex, base, spec, ttf, shift):
     if ttf is not None and ttf.has(g.id) and target.max() > 0.2:
         pen_x, base_y = PAD - g.xo + shift[0], PAD + base - g.yo + shift[1]
         cov = ttf.render(g.id, cw, ch, pen_x, base_y, scale=1)
-        if _ncc(cov, target) >= MIN_NCC:
+        if spec.substitute and cov.sum() > 0:
+            # A different typeface: centre each glyph on the original's ink, which the vanilla spacing
+            # was made for.
+            pen_x += _ink_centre(target) - _ink_centre(cov)
+            cov = ttf.render(g.id, cw, ch, pen_x, base_y, scale=1)
+        if spec.substitute or _ncc(cov, target) >= MIN_NCC:
             m1 = cov
             m2 = ttf.render(g.id, cw, ch, pen_x, base_y, scale=2, ss=4)
             source = 'ttf'
@@ -197,27 +207,25 @@ def _shifted(a, dx, dy):
         (w, h), Image.AFFINE, (1, 0, -dx, 0, 1, -dy), Image.BILINEAR))
 
 
-def resized_glyph(g, tex, font, spec, ttf, shift):
-    """Glyph `g` redrawn at spec.resize times its vanilla size, with a synthesised drop shadow.
+def redrawn_glyph(g, tex, font, spec, ttf, shift):
+    """Glyph `g` drawn from the outline font, with a synthesised drop shadow.
 
     The result is a GlyphResult whose cell origin sits `pad` 1x pixels above-left of the pen
     position at the top of the line, ready for _crop(pad=pad).
     """
-    s = spec.resize
     pad = 6
-    base = round(font.base * s)
-    cw, ch = max(1, round(g.xa * s)) + 2 * pad, round(font.line_height * s) + 2 * pad
-    blank = Glyph(g.id, 0, 0, round(g.w * s), round(g.h * s), round(g.xo * s), round(g.yo * s), round(g.xa * s))
+    cw, ch = max(1, g.xa) + 2 * pad, font.line_height + 2 * pad
+    blank = replace(g, x=0, y=0)
     if g.w <= 0 or g.h <= 0 or tex[g.y:g.y + g.h, g.x:g.x + g.w, 3].max() < 1.0 / 255.0:
         return GlyphResult(blank, None, 'empty')
     if ttf.has(g.id):
-        m2 = ttf.render(g.id, cw, ch, pad + shift[0] * s, pad + base + shift[1] * s, scale=2, ss=4)
+        m2 = ttf.render(g.id, cw, ch, pad + shift[0], pad + font.base + shift[1], scale=2, ss=4)
         source = 'ttf'
     else:
         cell = np.pad(tex[g.y:g.y + g.h, g.x:g.x + g.w], ((PAD, PAD), (PAD, PAD), (0, 0)))
-        traced = trace.trace_coverage(fill_target(cell, spec.effects), scale=2 * s)
+        traced = trace.trace_coverage(fill_target(cell, spec.effects), scale=2)
         m2 = np.zeros((ch * 2, cw * 2), dtype=np.float32)
-        ox, oy = round((pad + (g.xo - PAD) * s) * 2), round((pad + (g.yo - PAD) * s) * 2)
+        ox, oy = (pad + g.xo - PAD) * 2, (pad + g.yo - PAD) * 2
         th, tw = traced.shape
         y0, x0 = max(oy, 0), max(ox, 0)
         y1, x1 = min(oy + th, m2.shape[0]), min(ox + tw, m2.shape[1])
@@ -225,7 +233,7 @@ def resized_glyph(g, tex, font, spec, ttf, shift):
         source = 'traced'
     if spec.shadow:
         dx, dy, sigma, strength = spec.shadow
-        sh = np.clip(strength * _gaussian_blur(_shifted(m2, 2 * dx * s, 2 * dy * s), 2 * sigma * s), 0, 1)
+        sh = np.clip(strength * _gaussian_blur(_shifted(m2, 2 * dx, 2 * dy), 2 * sigma), 0, 1)
     else:
         sh = np.zeros_like(m2)
     out = np.zeros(m2.shape + (4,), dtype=np.float32)
@@ -237,16 +245,11 @@ def resized_glyph(g, tex, font, spec, ttf, shift):
 
 def build_atlas(font: BMFont, tex, spec: FontSpec):
     """Returns (BMFont with 1x metrics, 2x RGBA atlas, glyph counts per source, 1x atlas size)."""
-    if spec.resize != 1.0:
-        # Shift is measured at the vanilla size, where the original bitmaps are a reference.
-        shift = font_shift(font, tex, spec, TTFGlyphs(spec.ttf, spec.em, spec.embolden))
-        ttf = TTFGlyphs(spec.ttf, spec.em * spec.resize, spec.embolden * spec.resize)
-        results = [resized_glyph(g, tex, font, spec, ttf, shift) for g in font.glyphs]
+    if spec.redraw:
+        ttf = TTFGlyphs(spec.ttf, spec.em, spec.embolden)
+        shift = font_shift(font, tex, spec, ttf)
+        results = [redrawn_glyph(g, tex, font, spec, ttf, shift) for g in font.glyphs]
         results = [_crop(r, pad=6) if r.rgba is not None else r for r in results]
-        common = dict(font.common, lineHeight=str(round(font.line_height * spec.resize)),
-                      base=str(round(font.base * spec.resize)))
-        kernings = [(a, b, round(amt * spec.resize)) for a, b, amt in font.kernings]
-        font = BMFont(dict(font.info), common, font.glyphs, kernings)
     else:
         ttf = TTFGlyphs(spec.ttf, spec.em, spec.embolden) if spec.ttf else None
         shift = font_shift(font, tex, spec, ttf) if ttf else (0.0, 0.0)
